@@ -1,0 +1,270 @@
+name: AI Test Maintenance
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - "src/**"
+      - "public/**"
+      - "index.html"
+      - "vite.config.ts"
+      - "package.json"
+      - "playwright.config.ts"
+      - "specs/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  maintain-tests:
+    if: >
+      github.actor != 'github-actions[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright
+        run: pnpm exec playwright install --with-deps
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Fetch PR base branch
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+
+      - name: Save PR diff
+        shell: bash
+        run: |
+          git diff \
+            "origin/${{ github.base_ref }}...${{ github.event.pull_request.head.sha }}" \
+            -- \
+            src \
+            public \
+            index.html \
+            vite.config.ts \
+            package.json \
+            playwright.config.ts \
+            specs \
+            tests \
+            > pr-diff.txt
+
+      - name: Detect changed files
+        shell: bash
+        run: |
+          git diff --name-status \
+            "origin/${{ github.base_ref }}...${{ github.event.pull_request.head.sha }}" \
+            -- \
+            src \
+            public \
+            index.html \
+            vite.config.ts \
+            package.json \
+            playwright.config.ts \
+            specs \
+            tests \
+            > changed-files.txt
+
+          echo "=== Changed files ==="
+          cat changed-files.txt
+
+          echo
+          echo "=== PR diff ==="
+          cat pr-diff.txt
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Run Playwright test maintainer
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          copilot \
+            --agent=playwright-test-maintainer \
+            --yolo \
+            -p "
+            Maintain this repository's Playwright E2E test suite.
+
+            The repository contains:
+            - specs/ for test specifications
+            - tests/ for Playwright implementation
+            - .github/agents/ for agent instructions
+
+            The current pull request diff is stored in:
+            pr-diff.txt
+
+            The changed file list is stored in:
+            changed-files.txt
+
+            First inspect:
+            - pr-diff.txt
+            - changed-files.txt
+            - specs/
+            - tests/
+            - src/
+            - .github/agents/
+            - playwright.config.ts
+            - package.json
+
+            Treat the PR diff as the primary source of truth for what changed.
+
+            Rules:
+
+            1. Preserve all existing passing tests.
+
+            2. Never create a duplicate test scenario.
+
+            3. If a changed feature is already covered by an existing test,
+               update that test only when the existing behavior or assertion
+               actually changed.
+
+            4. If the PR introduces genuinely new user-visible behavior
+               with no existing coverage, create a new Playwright test.
+
+            5. If a missing scenario from specs/ is directly related to the
+               current PR behavior, add that scenario and its implementation.
+
+            6. Do not generate unrelated historical tests.
+
+            7. Keep one scenario per test file according to this repository's
+               existing convention.
+
+            8. Prefer accessible Playwright locators such as:
+               getByRole, getByLabel, getByText, getByPlaceholder.
+
+            9. Prefer web-first assertions.
+
+            10. Do not add arbitrary timeouts or waitForTimeout calls.
+
+            11. Do not use waitForLoadState('networkidle').
+
+            12. Do not modify application source code.
+
+            13. Only modify:
+                - tests/**
+                - specs/**
+
+            14. Never modify:
+                - src/**
+                - public/**
+                - package.json
+                - pnpm-lock.yaml
+                - playwright.config.ts
+                - vite.config.ts
+                - GitHub workflows
+                - secrets
+                - environment files
+
+            15. Do not create E2E tests for:
+                - formatting-only changes
+                - whitespace-only changes
+                - refactors with identical observable behavior
+                - internal helper changes
+                - constants
+                - renamed variables
+                - dependency lockfile changes
+                - CI-only changes
+
+            16. Before editing tests, produce a coverage decision for every
+                behaviorally relevant change:
+
+                - changed file
+                - changed behavior
+                - existing coverage
+                - affected test
+                - decision: create / update / no-op
+                - reason
+
+            17. Only create Playwright E2E tests for externally observable
+                application behavior.
+
+            18. For external links, prefer validating the application's
+                href, target, accessible name, and visibility rather than
+                navigating to third-party websites.
+
+            19. Never use:
+                test.fixme()
+                test.skip()
+                test.describe.skip()
+
+                to hide failures.
+
+            20. If a generated or modified test fails:
+                - investigate the root cause
+                - repair the test when appropriate
+                - rerun it
+                - then run the complete Playwright suite
+
+            21. Never modify application code to make a test pass.
+
+            22. If a failure cannot be repaired confidently:
+                leave the test intact
+                report the failure
+                exit with failure
+
+            23. Do not weaken assertions merely to make tests pass.
+
+            24. Do not add tests merely because code coverage increased.
+
+            25. Finish only after the affected tests and complete Playwright
+                suite have been run.
+            "
+
+      - name: Run Playwright
+        run: pnpm exec playwright test
+
+      - name: Show generated changes
+        run: |
+          echo "=== Git status ==="
+          git status --short
+
+          echo
+          echo "=== Test/spec diff ==="
+          git diff -- tests specs
+
+      - name: Commit generated tests
+        shell: bash
+        run: |
+          if git diff --quiet -- tests specs; then
+            echo "No test or spec changes generated."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add tests specs
+
+          git commit \
+            -m "test: update Playwright coverage" \
+            -m "[ai-test-maintenance]"
+
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
