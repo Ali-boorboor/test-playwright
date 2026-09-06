@@ -5,7 +5,6 @@ import heroImg from "./assets/hero.png";
 import reactLogo from "./assets/react.svg";
 import viteLogo from "./assets/vite.svg";
 import DecreaseButton from "./DecreaseButton";
-import ResetButton from "./ResetButton";
 
 function App() {
   const [count, setCount] = useState(0);
@@ -32,7 +31,6 @@ function App() {
           Count is {count}
         </button>
         <DecreaseButton handleDecrease={() => setCount((count) => count - 1)} />
-        <ResetButton handleReset={() => setCount(0)} />
       </section>
 
       <div className="ticks"></div>
